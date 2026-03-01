@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 54;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -174,6 +174,9 @@
 		AAF418C222BA2AF000111554 /* LKConsoleSelectPopoverController.m in Sources */ = {isa = PBXBuildFile; fileRef = AAF418C122BA2AF000111554 /* LKConsoleSelectPopoverController.m */; };
 		AAF418C522BA2C9600111554 /* LKConsoleSelectPopoverItemControl.m in Sources */ = {isa = PBXBuildFile; fileRef = AAF418C422BA2C9600111554 /* LKConsoleSelectPopoverItemControl.m */; };
 		AAF418C822BA2D1300111554 /* LKImageTextView.m in Sources */ = {isa = PBXBuildFile; fileRef = AAF418C722BA2D1300111554 /* LKImageTextView.m */; };
+		B363E9FA2F54680200EC77EA /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B363E9F82F54680200EC77EA /* MCPServerManager.swift */; };
+		B363E9FB2F54680200EC77EA /* LookinMCPDataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B363E9F72F54680200EC77EA /* LookinMCPDataProvider.swift */; };
+		B363EA012F54685200EC77EA /* LookinMCP in Frameworks */ = {isa = PBXBuildFile; productRef = B363EA002F54685200EC77EA /* LookinMCP */; };
 		BC7E32318E0156F2D16B96CA /* Pods_LookinClient.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 81A3B0CB06C22A05EDC913F3 /* Pods_LookinClient.framework */; };
 		D4052AC9235CBD090033C961 /* LKMeasureTutorialView.m in Sources */ = {isa = PBXBuildFile; fileRef = D4052AC8235CBD090033C961 /* LKMeasureTutorialView.m */; };
 		D4052ACC235CE2300033C961 /* LKMeasureResultView.m in Sources */ = {isa = PBXBuildFile; fileRef = D4052ACB235CE2300033C961 /* LKMeasureResultView.m */; };
@@ -554,6 +557,8 @@
 		AAF418C422BA2C9600111554 /* LKConsoleSelectPopoverItemControl.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = LKConsoleSelectPopoverItemControl.m; sourceTree = "<group>"; };
 		AAF418C622BA2D1300111554 /* LKImageTextView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LKImageTextView.h; sourceTree = "<group>"; };
 		AAF418C722BA2D1300111554 /* LKImageTextView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = LKImageTextView.m; sourceTree = "<group>"; };
+		B363E9F72F54680200EC77EA /* LookinMCPDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookinMCPDataProvider.swift; sourceTree = "<group>"; };
+		B363E9F82F54680200EC77EA /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
 		D4052AC7235CBD090033C961 /* LKMeasureTutorialView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LKMeasureTutorialView.h; sourceTree = "<group>"; };
 		D4052AC8235CBD090033C961 /* LKMeasureTutorialView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = LKMeasureTutorialView.m; sourceTree = "<group>"; };
 		D4052ACA235CE2300033C961 /* LKMeasureResultView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LKMeasureResultView.h; sourceTree = "<group>"; };
@@ -575,6 +580,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA1CAA3E22E471EC006D9285 /* Security.framework in Frameworks */,
+				B363EA012F54685200EC77EA /* LookinMCP in Frameworks */,
 				094E413CB04F29F94551D070 /* Pods_LookinClient.framework in Frameworks */,
 				BC7E32318E0156F2D16B96CA /* Pods_LookinClient.framework in Frameworks */,
 			);
@@ -860,6 +866,7 @@
 				AA08FC9322DF99E700F65B20 /* Tutorial */,
 				AA0757B922C606F3005535DC /* Export */,
 				AA0757C122C607D7005535DC /* Manager */,
+				B363E9F92F54680200EC77EA /* MCP */,
 				AA50753722A269F600D2A5AC /* Console */,
 				AAA8C08721CC17670017A345 /* Connection */,
 				AAA8C0F721CC17680017A345 /* Toolbar */,
@@ -1163,6 +1170,15 @@
 			path = Preference;
 			sourceTree = "<group>";
 		};
+		B363E9F92F54680200EC77EA /* MCP */ = {
+			isa = PBXGroup;
+			children = (
+				B363E9F72F54680200EC77EA /* LookinMCPDataProvider.swift */,
+				B363E9F82F54680200EC77EA /* MCPServerManager.swift */,
+			);
+			path = MCP;
+			sourceTree = "<group>";
+		};
 		D4224EF02358ED3A00ED9626 /* Measure */ = {
 			isa = PBXGroup;
 			children = (
@@ -1236,6 +1252,9 @@
 				"zh-Hans",
 			);
 			mainGroup = AA48F29221CC0CA50032EC2C;
+			packageReferences = (
+				B363E9FF2F54685200EC77EA /* XCLocalSwiftPackageReference "LookinMCP" */,
+			);
 			productRefGroup = AA48F29C21CC0CA50032EC2C /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -1292,9 +1311,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-LookinClient/Pods-LookinClient-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-LookinClient/Pods-LookinClient-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -1472,6 +1495,8 @@
 				AAC16CDA2282B5F400E67E0A /* LKTipsView.m in Sources */,
 				AAA8C14F21CC17680017A345 /* LKMenuPopoverAppsListController.m in Sources */,
 				AAD2BED1226B280B00E83D01 /* LKTableRowView.m in Sources */,
+				B363E9FA2F54680200EC77EA /* MCPServerManager.swift in Sources */,
+				B363E9FB2F54680200EC77EA /* LookinMCPDataProvider.swift in Sources */,
 				AA05CCD4221ED5CA0086CDD1 /* LKDashboardAttributeNumberInputView.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1649,7 +1674,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = hughkli.Lookin;
 				PRODUCT_NAME = Lookin;
@@ -1690,7 +1715,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = hughkli.Lookin;
 				PRODUCT_NAME = Lookin;
@@ -1722,6 +1747,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B363E9FF2F54685200EC77EA /* XCLocalSwiftPackageReference "LookinMCP" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LookinMCP;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B363EA002F54685200EC77EA /* LookinMCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LookinMCP;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AA48F29321CC0CA50032EC2C /* Project object */;
 }

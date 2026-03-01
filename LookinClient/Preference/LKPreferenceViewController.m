@@ -19,6 +19,7 @@
 @property(nonatomic, strong) LKPreferencePopupView *view_appearance;
 @property(nonatomic, strong) LKPreferencePopupView *view_colorFormat;
 @property(nonatomic, strong) LKPreferenceSwitchView *view_enableLog;
+@property(nonatomic, strong) LKPreferenceSwitchView *view_enableMCPServer;
 @property(nonatomic, strong) LKPreferencePopupView *view_contrast;
 
 //@property(nonatomic, strong) NSButton *debugButton;
@@ -71,6 +72,12 @@
     };
     [self.view addSubview:self.view_enableLog];
     
+    self.view_enableMCPServer = [[LKPreferenceSwitchView alloc] initWithTitle:NSLocalizedString(@"Enable MCP Server", nil) message:NSLocalizedString(@"Allow external AI tools to query view hierarchy via HTTP API on port 47199.", nil)];
+    self.view_enableMCPServer.didChange = ^(BOOL isChecked) {
+        [LKPreferenceManager mainManager].enableMCPServer = isChecked;
+    };
+    [self.view addSubview:self.view_enableMCPServer];
+    
 //    self.debugButton = [NSButton lk_normalButtonWithTitle:@"Debug" target:self action:@selector(_handleDebugButton)];
 //    [self.view addSubview:self.debugButton];
     
@@ -94,6 +101,7 @@
     self.view_appearance.selectedIndex = manager.appearanceType;
     self.view_doubleClick.selectedIndex = manager.doubleClickBehavior;
     self.view_enableLog.isChecked = manager.enableReport;
+    self.view_enableMCPServer.isChecked = manager.enableMCPServer;
 }
 
 - (void)viewDidLayout {
@@ -114,7 +122,14 @@
         y = view.$maxY + 5;
     }];
     
-    $(self.resetButton).width(120).bottom(insets.bottom).right(insets.right);
+    y += 10;
+    [$(self.view_enableMCPServer).array enumerateObjectsUsingBlock:^(NSView *  _Nonnull view, NSUInteger idx, BOOL * _Nonnull stop) {
+        $(view).x(115).toRight(insets.right).y(y).heightToFit;
+        y = view.$maxY + 5;
+    }];
+    
+    y += 15;
+    $(self.resetButton).width(120).y(y).right(insets.right);
 //    $(self.debugButton).bottom(insets.bottom).maxX(self.resetButton.$x - 15);
 }
 
@@ -122,6 +137,7 @@
     LKPreferenceManager *manager = [LKPreferenceManager mainManager];
     manager.appearanceType = LookinPreferredAppeanranceTypeSystem;
     manager.enableReport = YES;
+    manager.enableMCPServer = YES;
     manager.rgbaFormat = YES;
     manager.doubleClickBehavior = LookinDoubleClickBehaviorCollapse;
     manager.imageContrastLevel = 0;

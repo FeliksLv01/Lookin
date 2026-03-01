@@ -216,3 +216,7 @@
 "Some layer data failed to transmit." = "某些图层信息传输失败";
 "It may be due to changes in the layer structure within the iOS app. You can try reloading the entire structure in Lookin." = "可能因为 iOS App 中的图层结构有变化，可尝试在 Lookin 中整体重新刷新。";
 "properties or methods" = "搜索属性或方法";
+
+"Copy for AI" = "复制供 AI 使用";
+"Enable MCP Server" = "启用 MCP 服务";
+"Allow external AI tools to query view hierarchy via HTTP API on port 47199." = "允许外部 AI 工具通过 HTTP API（端口 47199）查询视图层级。";

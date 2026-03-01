@@ -6,3 +6,9 @@ Lookin.xcworkspace/xcuserdata
 DerivedData/
 Gemfile
 Gemfile.lock
+
+# Swift Package Manager
+LookinMCP/.build/
+LookinMCP/.swiftpm/
+*.xcodeproj
+!LookinMCP/Package.swift

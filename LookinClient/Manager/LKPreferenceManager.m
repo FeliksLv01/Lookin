@@ -37,6 +37,7 @@ static NSString * const Key_CallStackType = @"callStackType";
 static NSString * const Key_SyncConsoleTarget = @"syncConsoleTarget";
 static NSString * const Key_FreeRotation = @"FreeRotation";
 static NSString * const Key_FastMode = @"fastMode";
+static NSString * const Key_EnableMCPServer = @"enableMCPServer";
 static NSString * const Key_ReceivingConfigTime_Color = @"ConfigTime_Color";
 static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
 
@@ -180,6 +181,14 @@ static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
         }
         [self.fastMode subscribe:self action:@selector(_handleFastModeDidChange:) relatedObject:nil];
         
+        NSNumber *obj_enableMCPServer = [userDefaults objectForKey:Key_EnableMCPServer];
+        if (obj_enableMCPServer != nil) {
+            _enableMCPServer = [obj_enableMCPServer boolValue];
+        } else {
+            _enableMCPServer = YES;
+            [userDefaults setObject:@(_enableMCPServer) forKey:Key_EnableMCPServer];
+        }
+        
         self.storedSectionShowConfig = [[userDefaults objectForKey:Key_SectionsShow] mutableCopy];
         if (!self.storedSectionShowConfig) {
             self.storedSectionShowConfig = [NSMutableDictionary dictionary];
@@ -227,6 +236,17 @@ static NSString * const Key_ReceivingConfigTime_Class = @"ConfigTime_Class";
     }
     
     MSACAppCenter.enabled = enableReport;
+}
+
+- (void)setEnableMCPServer:(BOOL)enableMCPServer {
+    if (_enableMCPServer == enableMCPServer) {
+        return;
+    }
+    _enableMCPServer = enableMCPServer;
+    if (self.shouldStoreToLocal) {
+        [[NSUserDefaults standardUserDefaults] setObject:@(enableMCPServer) forKey:Key_EnableMCPServer];
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"LKMCPServerEnabledDidChange" object:@(enableMCPServer)];
 }
 
 - (void)setRgbaFormat:(BOOL)rgbaFormat {

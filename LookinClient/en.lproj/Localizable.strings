@@ -218,3 +218,7 @@
 "Some layer data failed to transmit." = "Some layer data failed to transmit.";
 "It may be due to changes in the layer structure within the iOS app. You can try reloading the entire structure in Lookin." = "It may be due to changes in the layer structure within the iOS app. You can try reloading the entire structure in Lookin.";
 "properties or methods" = "properties or methods";
+
+"Copy for AI" = "Copy for AI";
+"Enable MCP Server" = "Enable MCP Server";
+"Allow external AI tools to query view hierarchy via HTTP API on port 47199." = "Allow external AI tools to query view hierarchy via HTTP API on port 47199.";

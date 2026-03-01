@@ -65,6 +65,8 @@ typedef NS_ENUM(NSInteger, LookinMeasureState) {
 
 @property(nonatomic, assign) BOOL enableReport;
 
+@property(nonatomic, assign) BOOL enableMCPServer;
+
 @property(nonatomic, assign) BOOL rgbaFormat;
 
 /// 0 ~ 2
