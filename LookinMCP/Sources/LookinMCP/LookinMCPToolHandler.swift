@@ -92,6 +92,17 @@ struct LookinMCPToolHandler {
                 name: "reload_hierarchy",
                 description: "Reload the view hierarchy from the connected iOS app. Use this to refresh the data after UI changes.",
                 inputSchema: .object(["type": "object", "properties": [:]])
+            ),
+            Tool(
+                name: "get_view_attributes",
+                description: "Get detailed attributes of a view by oid, including all property groups (Layout, AutoLayout, UILabel, UIScrollView, etc.), event handlers (gestures, target-actions), and AutoLayout constraints. Use this to inspect specific properties like text, font, textColor, cornerRadius, backgroundColor, constraints, etc.",
+                inputSchema: .object([
+                    "type": "object",
+                    "properties": [
+                        "oid": ["type": "integer", "description": "The unique object ID of the view to get attributes for"]
+                    ],
+                    "required": ["oid"]
+                ])
             )
         ]
     }
@@ -201,6 +212,17 @@ struct LookinMCPToolHandler {
         case "reload_hierarchy":
             let result = await dataSource.reloadHierarchy()
             return .init(content: [.text(result.toJSON())], isError: !result.success)
+            
+        case "get_view_attributes":
+            guard let oidValue = params.arguments?["oid"]?.intValue else {
+                return .init(content: [.text("Error: Missing required parameter 'oid'")], isError: true)
+            }
+            let oid = UInt(oidValue)
+            if let attributes = await dataSource.getViewAttributes(oid: oid) {
+                return .init(content: [.text(attributes.toJSON())], isError: false)
+            } else {
+                return .init(content: [.text("Error: View not found with oid \(oid)")], isError: true)
+            }
             
         default:
             return .init(content: [.text("Error: Unknown tool '\(params.name)'")], isError: true)
