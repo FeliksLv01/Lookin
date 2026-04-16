@@ -1,211 +1,119 @@
 # LookinMCP
 
-MCP (Model Context Protocol) Server for iOS View Debugging using Lookin.
+MCP (Model Context Protocol) Server for iOS View Debugging, built into the Lookin macOS app.
 
-This server allows LLMs (like Claude) to inspect iOS app UI hierarchy - both from exported `.lookin` files and in **real-time** from the running Lookin macOS app.
+LookinMCP 以 HTTP 服务的形式内嵌在 Lookin macOS 应用中，让 Claude、opencode 等 AI 工具能够实时检查 iOS 应用的视图层级。
 
-## Features
-
-### Static Analysis (from .lookin files)
-- Load and parse `.lookin` files exported from Lookin
-- Browse view hierarchy tree
-- Search views by class name, memory address, or text content
-- Get detailed view attributes (frame, constraints, colors, etc.)
-- Analyze layout issues (ambiguous layout, conflicting constraints)
-- Extract screenshots
-- List all ViewControllers
-
-### Real-time Inspection (from running Lookin app)
-- Query live view hierarchy from connected iOS app
-- Search views in real-time
-- Get live screenshots
-- No need to export files - inspect directly!
-
-## Architecture
+## 架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         LookinMCP Server                            │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌──────────────────┐    ┌────────────────┐ │
-│  │   MCP Layer     │    │  LookinBridge    │    │  LookinShared  │ │
-│  │  (JSON-RPC)     │◄──►│  (Swift Wrapper) │◄──►│  (Objective-C) │ │
-│  │                 │    │                  │    │                │ │
-│  │ - stdio I/O     │    │ - File Parsing   │    │ - Data Models  │ │
-│  │ - tools/list    │    │ - HTTP Client    │    │ - NSCoding     │ │
-│  │ - tools/call    │    │ - Search/Filter  │    │ - Attributes   │ │
-│  └─────────────────┘    └──────────────────┘    └────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-           │                         │
-           │ JSON-RPC (stdio)        │ HTTP (port 47199)
-           ▼                         ▼
-      ┌─────────┐              ┌─────────────┐
-      │   LLM   │              │   Lookin    │
-      │ (Claude)│              │  macOS App  │
-      └─────────┘              └─────────────┘
+┌─────────────────────────────────────────────┐
+│              Lookin macOS App               │
+│                                             │
+│  ┌──────────────┐    ┌───────────────────┐  │
+│  │  LookinMCP   │    │   Lookin Core     │  │
+│  │  HTTP Server │◄──►│  (DataSource)     │  │
+│  │  :47199/mcp  │    │                   │  │
+│  └──────────────┘    └───────────────────┘  │
+└─────────────────────────────────────────────┘
+         │ MCP Streamable HTTP (SSE)
+         ▼
+┌─────────────────┐
+│   AI Tool       │
+│ (Claude/opencode│
+│  /Cursor etc.)  │
+└─────────────────┘
+         │ LookinServer protocol
+         ▼
+┌─────────────────┐
+│   iOS App       │
+│ (LookinServer)  │
+└─────────────────┘
 ```
 
-## Available Tools
+## 前置条件
 
-### Static Tools (from .lookin files)
-
-| Tool | Description |
-|------|-------------|
-| `load_lookin_file` | Load a .lookin file (must be called first for static analysis) |
-| `get_app_info` | Get app information (name, bundle ID, device, OS) |
-| `get_hierarchy` | Get the view hierarchy tree |
-| `get_view_details` | Get detailed attributes of a specific view |
-| `search_views` | Search views by class name, address, or text |
-| `get_screenshot` | Get screenshot of a view (base64 PNG) |
-| `list_view_controllers` | List all ViewControllers in the hierarchy |
-| `analyze_layout_issues` | Find views with ambiguous layout or constraint issues |
-
-### Live Tools (from running Lookin app)
-
-| Tool | Description |
-|------|-------------|
-| `live_status` | Check if Lookin is running and connected to an iOS app |
-| `live_hierarchy` | Get real-time view hierarchy from connected app |
-| `live_view_details` | Get real-time details of a specific view |
-| `live_search` | Search views in real-time |
-| `live_screenshot` | Get real-time screenshot of a view |
-| `live_app_info` | Get info about the connected iOS app |
-| `live_view_controllers` | List all ViewControllers in real-time |
-
-## Prerequisites
-
-### For Static Analysis (.lookin files)
-
-1. Export a `.lookin` file from Lookin app:
-   - Open Lookin and connect to your iOS app
-   - File → Export (Cmd+E)
-   - Save the `.lookin` file
-
-### For Real-time Inspection
-
-1. **Build Lookin from source** (with MCP Server support):
-   ```bash
-   cd /path/to/Lookin
-   pod install
-   xcodebuild -workspace Lookin.xcworkspace -scheme LookinClient -configuration Debug build
-   ```
-
-2. **Run the modified Lookin app** - it will start an HTTP server on port 47199
-
-3. **Connect to an iOS app** in Lookin
-
-### iOS App Requirements
-
-Your iOS app must have [LookinServer](https://github.com/QMUI/LookinServer) integrated:
+1. **运行 Lookin macOS 应用**（需从源码构建，已集成 LookinMCP）
+2. **iOS 应用集成 LookinServer**：
 
 ```ruby
 # Podfile
 pod 'LookinServer', :configurations => ['Debug']
 ```
 
-## Building
+3. **在模拟器或真机上运行 iOS 应用**，并在 Lookin 中连接到它
 
-```bash
-cd LookinMCP
-swift build -c release
-```
+Lookin 启动后会自动在 `http://127.0.0.1:47199/mcp` 上启动 MCP 服务。
 
-The binary will be at `.build/release/lookin-mcp`
+## 配置 AI 工具
 
-## Usage with Claude Desktop
+### Claude Desktop
 
-Add to your Claude Desktop configuration file:
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+`~/Library/Application Support/Claude/claude_desktop_config.json`：
 
 ```json
 {
   "mcpServers": {
     "lookin": {
-      "command": "/Users/YOUR_USERNAME/Desktop/LookinMCP/.build/release/lookin-mcp"
+      "type": "http",
+      "url": "http://127.0.0.1:47199/mcp"
     }
   }
 }
 ```
 
-After restarting Claude Desktop, you can use the Lookin tools.
+### opencode / Cursor 等
 
-## Example Usage
+配置 remote MCP server，URL 填 `http://127.0.0.1:47199/mcp`。
 
-### Static Analysis (from .lookin file)
+## 可用工具
 
-1. **Load a file first:**
-   > "Load the lookin file at /path/to/MyApp.lookin"
+| 工具 | 说明 | 参数 |
+|------|------|------|
+| `get_status` | 检查 MCP 服务器状态及 iOS 应用连接情况 | 无 |
+| `get_app_info` | 获取应用名、Bundle ID、设备、系统版本、屏幕尺寸 | 无 |
+| `list_apps` | 列出所有已连接的 iOS 应用 | 无 |
+| `get_hierarchy` | 获取完整视图树 | `flat`（bool）、`maxDepth`（int） |
+| `reload_hierarchy` | 从应用刷新视图层级数据 | 无 |
+| `get_view` | 通过 oid 获取视图详细信息 | `oid`（int，必填） |
+| `get_view_attributes` | 获取视图全部属性（布局、AutoLayout、手势、约束等） | `oid`（int，必填） |
+| `search_views` | 按类名、文本或 oid 搜索视图 | `query`（string，必填）、`type`（"class"/"text"/"oid"） |
+| `get_screenshot` | 获取指定视图的 base64 PNG 截图 | `oid`（int，必填） |
+| `list_viewcontrollers` | 列出所有视图控制器及其类名和对应视图的 oid | 无 |
 
-2. **Explore the hierarchy:**
-   > "Show me the view hierarchy"
-   > "List all ViewControllers"
+## 使用示例
 
-3. **Search for views:**
-   > "Find all UIButton views"
-   > "Search for views containing the text 'Submit'"
+```
+"帮我看看当前界面的视图层级"
+→ get_status → get_hierarchy
 
-4. **Get details:**
-   > "What are the details of view with oid 42?"
+"找一下所有 UIButton"
+→ search_views(query="UIButton", type="class")
 
-### Real-time Inspection
+"oid 42 这个视图的 frame 是多少？有没有约束冲突？"
+→ get_view_attributes(oid=42)
 
-1. **Check connection:**
-   > "Check if Lookin is connected"
-   > "What's the live status?"
+"给我截一下 oid 100 的视图"
+→ get_screenshot(oid=100)
+```
 
-2. **Explore live:**
-   > "Show me the live view hierarchy"
-   > "Get the live app info"
+## 开发
 
-3. **Search in real-time:**
-   > "Search for UITableViewCell in the live app"
-   > "Find all buttons in the running app"
+LookinMCP 是一个 Swift Package Library，集成在 Lookin Xcode 工程中。
 
-4. **Get live details:**
-   > "Get live details of view 123"
-   > "Show me a live screenshot of view 456"
+```bash
+# 仅编译 LookinMCP 包（验证代码）
+cd LookinMCP
+swift build
 
-## Development Status
+# 完整构建需在 Xcode 中 build Lookin 主工程
+```
 
-- [x] MCP Protocol Layer (JSON-RPC over stdio)
-- [x] .lookin file parsing
-- [x] View hierarchy navigation
-- [x] View search (by class, address, text)
-- [x] Attribute extraction
-- [x] Screenshot extraction
-- [x] Layout issue analysis
-- [x] Real-time connection to Lookin (via HTTP)
-- [x] Live hierarchy queries
-- [x] Live view details
-- [x] Live search
-- [x] Live screenshots
+### Transport
 
-## How .lookin Files Work
-
-`.lookin` files are binary files created by the Lookin app using `NSKeyedArchiver`. They contain:
-
-- `LookinHierarchyInfo`: The complete hierarchy snapshot
-  - `LookinAppInfo`: App metadata (bundle ID, device info, etc.)
-  - `LookinDisplayItem[]`: Tree of views with their attributes
-- Screenshots for each view
-- Constraint information
-- Custom attribute sections
-
-## HTTP API (for Lookin App)
-
-When running the modified Lookin app, it exposes an HTTP server on port 47199:
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /status` | Server status and connection info |
-| `GET /apps` | List connected iOS apps |
-| `GET /app-info` | Get current app info |
-| `GET /hierarchy?flat=true` | Get view hierarchy |
-| `GET /view/:oid` | Get view details |
-| `GET /screenshot/:oid` | Get view screenshot |
-| `GET /search?q=...&type=class` | Search views |
-| `GET /viewcontrollers` | List all ViewControllers |
+使用 `StatefulHTTPServerTransport`，支持：
+- **POST** `/mcp`：JSON-RPC 请求
+- **GET** `/mcp`：建立 SSE 流（server-initiated messages）
 
 ## License
 

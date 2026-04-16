@@ -30,7 +30,7 @@ public actor LookinMCPServer {
     private let configuration: Configuration
     private let dataSource: any LookinMCPDataSource
     private var channel: Channel?
-    private var transport: StatelessHTTPServerTransport?
+    private var transport: StatefulHTTPServerTransport?
     private var server: Server?
     
     public nonisolated let logger: Logger
@@ -52,7 +52,7 @@ public actor LookinMCPServer {
     /// 启动服务器
     public func start() async throws {
         // 创建 Transport
-        transport = StatelessHTTPServerTransport(
+        transport = StatefulHTTPServerTransport(
             logger: logger
         )
         
@@ -234,10 +234,13 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             body = nil
         }
         
+        let path = state.head.uri.split(separator: "?").first.map(String.init) ?? state.head.uri
+        
         return HTTPRequest(
             method: state.head.method.rawValue,
             headers: headers,
-            body: body
+            body: body,
+            path: path
         )
     }
     
@@ -250,26 +253,58 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         let eventLoop = ctx.eventLoop
         let statusCode = response.statusCode
         let headers = response.headers
-        let bodyData = response.bodyData
         
-        eventLoop.execute {
-            var head = HTTPResponseHead(
-                version: version,
-                status: HTTPResponseStatus(statusCode: statusCode)
-            )
-            for (name, value) in headers {
-                head.headers.add(name: name, value: value)
+        if case .stream(let sseStream, _) = response {
+            // SSE 流响应：写入头部后持续写入流数据，保持连接不关闭
+            eventLoop.execute {
+                var head = HTTPResponseHead(
+                    version: version,
+                    status: HTTPResponseStatus(statusCode: statusCode)
+                )
+                for (name, value) in headers {
+                    head.headers.add(name: name, value: value)
+                }
+                ctx.writeAndFlush(self.wrapOutboundOut(.head(head)), promise: nil)
             }
             
-            ctx.write(self.wrapOutboundOut(.head(head)), promise: nil)
-            
-            if let body = bodyData {
-                var buffer = ctx.channel.allocator.buffer(capacity: body.count)
-                buffer.writeBytes(body)
-                ctx.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+            do {
+                for try await chunk in sseStream {
+                    let chunkCopy = chunk
+                    eventLoop.execute {
+                        var buffer = ctx.channel.allocator.buffer(capacity: chunkCopy.count)
+                        buffer.writeBytes(chunkCopy)
+                        ctx.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+                    }
+                }
+            } catch {
+                // 流结束或出错，关闭连接
             }
             
-            ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            eventLoop.execute {
+                ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            }
+        } else {
+            // 普通响应：一次性写入
+            let bodyData = response.bodyData
+            eventLoop.execute {
+                var head = HTTPResponseHead(
+                    version: version,
+                    status: HTTPResponseStatus(statusCode: statusCode)
+                )
+                for (name, value) in headers {
+                    head.headers.add(name: name, value: value)
+                }
+                
+                ctx.write(self.wrapOutboundOut(.head(head)), promise: nil)
+                
+                if let body = bodyData {
+                    var buffer = ctx.channel.allocator.buffer(capacity: body.count)
+                    buffer.writeBytes(body)
+                    ctx.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+                }
+                
+                ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            }
         }
     }
 }
