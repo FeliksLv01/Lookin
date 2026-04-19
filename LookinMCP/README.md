@@ -47,6 +47,16 @@ Lookin 启动后会自动在 `http://127.0.0.1:47199/mcp` 上启动 MCP 服务�
 
 ## 配置 AI 工具
 
+### Codex
+
+在 Codex 里添加一个 remote MCP server：
+
+- 名称：`lookin`
+- 类型：`HTTP`
+- URL：`http://127.0.0.1:47199/mcp`
+
+如果你直接编辑配置，核心就是把 `lookin` 指向这个本地地址。Lookin 必须先启动，并且已经完成 MCP server 初始化。
+
 ### Claude Desktop
 
 `~/Library/Application Support/Claude/claude_desktop_config.json`：
@@ -65,6 +75,39 @@ Lookin 启动后会自动在 `http://127.0.0.1:47199/mcp` 上启动 MCP 服务�
 ### opencode / Cursor 等
 
 配置 remote MCP server，URL 填 `http://127.0.0.1:47199/mcp`。
+
+### 连接检查
+
+配置完成后，可以先用下面的命令确认 Lookin 的 MCP 服务已经启动：
+
+```bash
+curl -i http://127.0.0.1:47199/mcp \
+  -H 'Accept: application/json, text/event-stream'
+```
+
+正常情况下会返回 `406 Not Acceptable` 或 MCP 的 HTTP 响应头，这说明服务端口已经起来了。
+
+也可以直接发送一次 `initialize` 来验证握手：
+
+```bash
+curl -i -X POST http://127.0.0.1:47199/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"debug-client","version":"1.0"}}}'
+```
+
+返回 `200 OK` 且带有 `MCP-Session-Id`，说明 `StatefulHTTPServerTransport` 握手正常。
+
+### 常见问题
+
+- 连不上 `127.0.0.1:47199`
+  - 先确认 Lookin macOS 应用已经启动，而不是只有 iOS App 在运行。
+- 返回 `406 Not Acceptable`
+  - 说明服务是活的，但客户端没有声明接受 `text/event-stream`。MCP 客户端应带上 `Accept: application/json, text/event-stream`。
+- 第一次连接失败，重试后成功
+  - 通常是 Lookin 刚启动时 MCP 服务还没 ready，或者客户端过早发起握手。先确认 Lookin 已完全启动。
+- 返回 `Session has been terminated`
+  - 说明客户端拿着一个已经结束的 stateful session 在继续请求。重新 `initialize` 获取新的 `MCP-Session-Id` 即可。
 
 ## 可用工具
 
