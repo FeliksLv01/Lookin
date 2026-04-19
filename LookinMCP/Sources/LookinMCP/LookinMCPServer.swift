@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Logging
 import MCP
 @preconcurrency import NIOCore
@@ -30,6 +31,7 @@ public actor LookinMCPServer {
     private let configuration: Configuration
     private let dataSource: any LookinMCPDataSource
     private var channel: Channel?
+    private var eventLoopGroup: MultiThreadedEventLoopGroup?
     private var transport: StatefulHTTPServerTransport?
     private var server: Server?
     
@@ -51,36 +53,11 @@ public actor LookinMCPServer {
     
     /// 启动服务器
     public func start() async throws {
-        // 创建 Transport
-        transport = StatefulHTTPServerTransport(
-            logger: logger
-        )
-        
-        guard let transport = transport else {
-            throw LookinMCPError.serverNotInitialized
-        }
-        
-        // 创建 MCP Server
-        server = Server(
-            name: "lookin-mcp-server",
-            version: "1.0.0",
-            capabilities: Server.Capabilities(
-                tools: .init(listChanged: false)
-            )
-        )
-        
-        guard let server = server else {
-            throw LookinMCPError.serverNotInitialized
-        }
-        
-        // 注册 Tools
-        await LookinMCPToolHandler.registerTools(on: server, dataSource: dataSource)
-        
-        // 启动 MCP Server
-        try await server.start(transport: transport)
+        try await rebuildSession(reason: "initial startup")
         
         // 启动 HTTP Server
         let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+        eventLoopGroup = group
         
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
@@ -113,11 +90,17 @@ public actor LookinMCPServer {
     
     /// 停止服务器
     public func stop() async {
-        try? await channel?.close()
+        if let channel {
+            try? await channel.close()
+        }
         channel = nil
-        await transport?.disconnect()
-        transport = nil
-        server = nil
+        await stopSession()
+        if let eventLoopGroup {
+            DispatchQueue.global(qos: .utility).async {
+                try? eventLoopGroup.syncShutdownGracefully()
+            }
+        }
+        eventLoopGroup = nil
         logger.info("Lookin MCP Server stopped")
     }
     
@@ -126,10 +109,86 @@ public actor LookinMCPServer {
     var endpoint: String { configuration.endpoint }
     
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
-        guard let transport = transport else {
-            return .error(statusCode: 500, .internalError("Server not initialized"))
+        guard let transport else {
+            do {
+                try await rebuildSession(reason: "missing session backend")
+            } catch {
+                return .error(statusCode: 500, .internalError("Server not initialized"))
+            }
+            return await handleHTTPRequest(request)
         }
-        return await transport.handleRequest(request)
+
+        let response = await transport.handleRequest(request)
+        if shouldRecycleSession(after: request, response: response) {
+            do {
+                try await rebuildSession(reason: "session closed by client")
+            } catch {
+                logger.error("Failed to rebuild session after DELETE", metadata: ["error": "\(error)"])
+            }
+            return response
+        }
+
+        guard isTerminatedResponse(response) else {
+            return response
+        }
+
+        logger.warning("Detected terminated MCP session, rebuilding backend", metadata: ["method": "\(request.method)"])
+        do {
+            try await rebuildSession(reason: "terminated session detected")
+            guard let refreshedTransport = self.transport else {
+                return response
+            }
+            return await refreshedTransport.handleRequest(request)
+        } catch {
+            logger.error("Failed to rebuild terminated session", metadata: ["error": "\(error)"])
+            return response
+        }
+    }
+
+    private func rebuildSession(reason: String) async throws {
+        logger.info("Rebuilding MCP session backend", metadata: ["reason": "\(reason)"])
+        await stopSession()
+
+        let transport = StatefulHTTPServerTransport(logger: logger)
+        let server = Server(
+            name: "lookin-mcp-server",
+            version: "1.0.0",
+            capabilities: Server.Capabilities(
+                tools: .init(listChanged: false)
+            )
+        )
+
+        await LookinMCPToolHandler.registerTools(on: server, dataSource: dataSource)
+        try await server.start(transport: transport)
+
+        self.transport = transport
+        self.server = server
+    }
+
+    private func stopSession() async {
+        guard let server else {
+            transport = nil
+            return
+        }
+        await server.stop()
+        self.server = nil
+        self.transport = nil
+    }
+
+    private func shouldRecycleSession(after request: HTTPRequest, response: HTTPResponse) -> Bool {
+        request.method.uppercased() == "DELETE" && response.statusCode == 200
+    }
+
+    private func isTerminatedResponse(_ response: HTTPResponse) -> Bool {
+        guard response.statusCode == 404, let body = response.bodyData else {
+            return false
+        }
+        guard let jsonObject = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let error = jsonObject["error"] as? [String: Any],
+              let message = error["message"] as? String else {
+            return false
+        }
+        return message.contains("Session has been terminated") || message.contains("Transport has been terminated")
     }
 }
 
