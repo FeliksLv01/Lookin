@@ -8,37 +8,44 @@ import MCP
 
 // MARK: - Lookin MCP Server
 
-/// Lookin MCP Server - 提供 MCP 协议接口供 Claude 等 AI 工具调用
 public actor LookinMCPServer {
-    
-    /// 服务器配置
+
     public struct Configuration: Sendable {
         public var host: String
         public var port: Int
         public var endpoint: String
-        
+        public var sessionTimeout: TimeInterval
+
         public init(
             host: String = "127.0.0.1",
             port: Int = 47199,
-            endpoint: String = "/mcp"
+            endpoint: String = "/mcp",
+            sessionTimeout: TimeInterval = 3600
         ) {
             self.host = host
             self.port = port
             self.endpoint = endpoint
+            self.sessionTimeout = sessionTimeout
         }
     }
-    
+
+    private struct SessionContext {
+        let server: Server
+        let transport: StatefulHTTPServerTransport
+        let createdAt: Date
+        var lastAccessedAt: Date
+    }
+
     private let configuration: Configuration
     private let dataSource: any LookinMCPDataSource
     private var channel: Channel?
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
-    private var transport: StatefulHTTPServerTransport?
-    private var server: Server?
-    
+    private var sessions: [String: SessionContext] = [:]
+
     public nonisolated let logger: Logger
-    
+
     // MARK: - Init
-    
+
     public init(
         dataSource: any LookinMCPDataSource,
         configuration: Configuration = Configuration(),
@@ -48,17 +55,13 @@ public actor LookinMCPServer {
         self.configuration = configuration
         self.logger = logger ?? Logger(label: "lookin.mcp.server")
     }
-    
+
     // MARK: - Lifecycle
-    
-    /// 启动服务器
+
     public func start() async throws {
-        try await rebuildSession(reason: "initial startup")
-        
-        // 启动 HTTP Server
         let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
         eventLoopGroup = group
-        
+
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -69,7 +72,7 @@ public actor LookinMCPServer {
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
-        
+
         logger.info(
             "Starting Lookin MCP Server",
             metadata: [
@@ -78,23 +81,23 @@ public actor LookinMCPServer {
                 "endpoint": "\(configuration.endpoint)"
             ]
         )
-        
+
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
         self.channel = channel
-        
+
+        Task { await sessionCleanupLoop() }
+
         logger.info("Lookin MCP Server started on http://\(configuration.host):\(configuration.port)\(configuration.endpoint)")
-        
-        // 等待 channel 关闭 (这会阻塞直到 stop() 被调用)
+
         try await channel.closeFuture.get()
     }
-    
-    /// 停止服务器
+
     public func stop() async {
+        await closeAllSessions()
         if let channel {
             try? await channel.close()
         }
         channel = nil
-        await stopSession()
         if let eventLoopGroup {
             DispatchQueue.global(qos: .utility).async {
                 try? eventLoopGroup.syncShutdownGracefully()
@@ -103,92 +106,116 @@ public actor LookinMCPServer {
         eventLoopGroup = nil
         logger.info("Lookin MCP Server stopped")
     }
-    
+
     // MARK: - HTTP Request Handling
-    
+
     var endpoint: String { configuration.endpoint }
-    
+
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
-        guard let transport else {
-            do {
-                try await rebuildSession(reason: "missing session backend")
-            } catch {
-                return .error(statusCode: 500, .internalError("Server not initialized"))
-            }
-            return await handleHTTPRequest(request)
-        }
+        let sessionID = request.header(HTTPHeaderName.sessionID)
 
-        let response = await transport.handleRequest(request)
-        if shouldRecycleSession(after: request, response: response) {
-            do {
-                try await rebuildSession(reason: "session closed by client")
-            } catch {
-                logger.error("Failed to rebuild session after DELETE", metadata: ["error": "\(error)"])
+        // Route to existing session
+        if let sessionID, var session = sessions[sessionID] {
+            session.lastAccessedAt = Date()
+            sessions[sessionID] = session
+
+            let response = await session.transport.handleRequest(request)
+
+            if request.method.uppercased() == "DELETE" && response.statusCode == 200 {
+                await closeSession(sessionID)
             }
+
             return response
         }
 
-        guard isTerminatedResponse(response) else {
-            return response
+        // No session — check for initialize request
+        if request.method.uppercased() == "POST",
+           let body = request.body,
+           isInitializeRequest(body)
+        {
+            return await createSessionAndHandle(request)
         }
 
-        logger.warning("Detected terminated MCP session, rebuilding backend", metadata: ["method": "\(request.method)"])
-        do {
-            try await rebuildSession(reason: "terminated session detected")
-            guard let refreshedTransport = self.transport else {
-                return response
-            }
-            return await refreshedTransport.handleRequest(request)
-        } catch {
-            logger.error("Failed to rebuild terminated session", metadata: ["error": "\(error)"])
-            return response
+        if sessionID != nil {
+            return .error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired"))
         }
+        return .error(statusCode: 400, .invalidRequest("Bad Request: Missing \(HTTPHeaderName.sessionID) header"))
     }
 
-    private func rebuildSession(reason: String) async throws {
-        logger.info("Rebuilding MCP session backend", metadata: ["reason": "\(reason)"])
-        await stopSession()
+    // MARK: - Session Management
 
-        let transport = StatefulHTTPServerTransport(logger: logger)
-        let server = Server(
-            name: "lookin-mcp-server",
-            version: "1.0.0",
-            capabilities: Server.Capabilities(
-                tools: .init(listChanged: false)
-            )
+    private func isInitializeRequest(_ body: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let method = json["method"] as? String else { return false }
+        return method == "initialize"
+    }
+
+    private struct FixedSessionIDGenerator: SessionIDGenerator {
+        let sessionID: String
+        func generateSessionID() -> String { sessionID }
+    }
+
+    private func createSessionAndHandle(_ request: HTTPRequest) async -> HTTPResponse {
+        let sessionID = UUID().uuidString
+
+        let transport = StatefulHTTPServerTransport(
+            sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
+            logger: logger
         )
 
-        await LookinMCPToolHandler.registerTools(on: server, dataSource: dataSource)
-        try await server.start(transport: transport)
+        do {
+            let server = Server(
+                name: "lookin-mcp-server",
+                version: "1.0.0",
+                capabilities: Server.Capabilities(tools: .init(listChanged: false))
+            )
+            await LookinMCPToolHandler.registerTools(on: server, dataSource: dataSource)
+            try await server.start(transport: transport)
 
-        self.transport = transport
-        self.server = server
+            sessions[sessionID] = SessionContext(
+                server: server,
+                transport: transport,
+                createdAt: Date(),
+                lastAccessedAt: Date()
+            )
+
+            let response = await transport.handleRequest(request)
+
+            if case .error = response {
+                await closeSession(sessionID)
+            }
+
+            return response
+        } catch {
+            await transport.disconnect()
+            return .error(statusCode: 500, .internalError("Failed to create session: \(error.localizedDescription)"))
+        }
     }
 
-    private func stopSession() async {
-        guard let server else {
-            transport = nil
-            return
-        }
-        await server.stop()
-        self.server = nil
-        self.transport = nil
+    private func closeSession(_ sessionID: String) async {
+        guard let session = sessions.removeValue(forKey: sessionID) else { return }
+        await session.transport.disconnect()
+        logger.info("Closed session", metadata: ["sessionID": "\(sessionID)"])
     }
 
-    private func shouldRecycleSession(after request: HTTPRequest, response: HTTPResponse) -> Bool {
-        request.method.uppercased() == "DELETE" && response.statusCode == 200
+    private func closeAllSessions() async {
+        for sessionID in sessions.keys {
+            await closeSession(sessionID)
+        }
     }
 
-    private func isTerminatedResponse(_ response: HTTPResponse) -> Bool {
-        guard response.statusCode == 404, let body = response.bodyData else {
-            return false
+    private func sessionCleanupLoop() async {
+        while true {
+            try? await Task.sleep(for: .seconds(60))
+            let now = Date()
+            let expired = sessions.filter { _, context in
+                now.timeIntervalSince(context.lastAccessedAt) > configuration.sessionTimeout
+            }
+            for (sessionID, _) in expired {
+                logger.info("Session expired", metadata: ["sessionID": "\(sessionID)"])
+                await closeSession(sessionID)
+            }
         }
-        guard let jsonObject = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let error = jsonObject["error"] as? [String: Any],
-              let message = error["message"] as? String else {
-            return false
-        }
-        return message.contains("Session has been terminated") || message.contains("Transport has been terminated")
     }
 }
 
@@ -197,7 +224,7 @@ public actor LookinMCPServer {
 public enum LookinMCPError: Error, LocalizedError {
     case serverNotInitialized
     case invalidRequest(String)
-    
+
     public var errorDescription: String? {
         switch self {
         case .serverNotInitialized:
@@ -210,27 +237,26 @@ public enum LookinMCPError: Error, LocalizedError {
 
 // MARK: - NIO HTTP Handler
 
-/// NIO HTTP 处理器 - 将 NIO 请求转换为 MCP HTTPRequest
 private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
-    
+
     private let server: LookinMCPServer
-    
+
     private struct RequestState {
         var head: HTTPRequestHead
         var bodyBuffer: ByteBuffer
     }
-    
+
     private var requestState: RequestState?
-    
+
     init(server: LookinMCPServer) {
         self.server = server
     }
-    
+
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let part = unwrapInboundIn(data)
-        
+
         switch part {
         case .head(let head):
             requestState = RequestState(
@@ -242,20 +268,19 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         case .end:
             guard let state = requestState else { return }
             requestState = nil
-            
+
             nonisolated(unsafe) let ctx = context
             Task { @MainActor in
                 await self.handleRequest(state: state, context: ctx)
             }
         }
     }
-    
+
     private func handleRequest(state: RequestState, context: ChannelHandlerContext) async {
         let head = state.head
         let path = head.uri.split(separator: "?").first.map(String.init) ?? head.uri
         let endpoint = await server.endpoint
-        
-        // 检查路径
+
         guard path == endpoint else {
             await writeResponse(
                 .error(statusCode: 404, .invalidRequest("Not Found")),
@@ -264,17 +289,12 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             )
             return
         }
-        
-        // 转换请求
+
         let httpRequest = makeHTTPRequest(from: state)
-        
-        // 委托给 MCP Transport 处理
         let response = await server.handleHTTPRequest(httpRequest)
-        
-        // 写回响应
         await writeResponse(response, version: head.version, context: context)
     }
-    
+
     private func makeHTTPRequest(from state: RequestState) -> HTTPRequest {
         var headers: [String: String] = [:]
         for (name, value) in state.head.headers {
@@ -284,7 +304,7 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 headers[name] = value
             }
         }
-        
+
         let body: Data?
         if state.bodyBuffer.readableBytes > 0,
            let bytes = state.bodyBuffer.getBytes(at: 0, length: state.bodyBuffer.readableBytes) {
@@ -292,9 +312,9 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         } else {
             body = nil
         }
-        
+
         let path = state.head.uri.split(separator: "?").first.map(String.init) ?? state.head.uri
-        
+
         return HTTPRequest(
             method: state.head.method.rawValue,
             headers: headers,
@@ -302,7 +322,7 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             path: path
         )
     }
-    
+
     private func writeResponse(
         _ response: HTTPResponse,
         version: HTTPVersion,
@@ -312,9 +332,8 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         let eventLoop = ctx.eventLoop
         let statusCode = response.statusCode
         let headers = response.headers
-        
+
         if case .stream(let sseStream, _) = response {
-            // SSE 流响应：写入头部后持续写入流数据，保持连接不关闭
             eventLoop.execute {
                 var head = HTTPResponseHead(
                     version: version,
@@ -325,7 +344,7 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 }
                 ctx.writeAndFlush(self.wrapOutboundOut(.head(head)), promise: nil)
             }
-            
+
             do {
                 for try await chunk in sseStream {
                     let chunkCopy = chunk
@@ -336,14 +355,13 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                     }
                 }
             } catch {
-                // 流结束或出错，关闭连接
+                // stream ended or errored
             }
-            
+
             eventLoop.execute {
                 ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
             }
         } else {
-            // 普通响应：一次性写入
             let bodyData = response.bodyData
             eventLoop.execute {
                 var head = HTTPResponseHead(
@@ -353,15 +371,15 @@ private final class LookinHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 for (name, value) in headers {
                     head.headers.add(name: name, value: value)
                 }
-                
+
                 ctx.write(self.wrapOutboundOut(.head(head)), promise: nil)
-                
+
                 if let body = bodyData {
                     var buffer = ctx.channel.allocator.buffer(capacity: body.count)
                     buffer.writeBytes(body)
                     ctx.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
                 }
-                
+
                 ctx.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
             }
         }
