@@ -23,6 +23,7 @@
 #import "LKUserActionManager.h"
 #import "LKHierarchyDataSource+KeyDown.h"
 #import "LKStaticAsyncUpdateManager.h"
+#import "LookinDisplayItem+LookinClient.h"
 
 extern NSString *const LKAppShowConsoleNotificationName;
 
@@ -703,6 +704,15 @@ extern NSString *const LKAppShowConsoleNotificationName;
     
     [menu addItem:({
         NSMenuItem *item = [NSMenuItem new];
+        item.target = self;
+        item.action = @selector(_handleCopyForAI:);
+        item.title = NSLocalizedString(@"Copy for AI", nil);
+        item;
+    })];
+    [menu addItem:[NSMenuItem separatorItem]];
+    
+    [menu addItem:({
+        NSMenuItem *item = [NSMenuItem new];
         item.enabled = YES;
         item.target = self;
         item.action = @selector(_handleCancelPreview:);
@@ -789,6 +799,17 @@ extern NSString *const LKAppShowConsoleNotificationName;
 - (void)_handleExportScreenshot:(NSMenuItem *)menuItem {
     LookinDisplayItem *item = self.rightClickingDisplayItem;
     [LKExportManager exportScreenshotWithDisplayItem:item];
+}
+
+- (void)_handleCopyForAI:(NSMenuItem *)menuItem {
+    LookinDisplayItem *item = self.rightClickingDisplayItem;
+    if (!item) {
+        return;
+    }
+    
+    NSPasteboard *paste = [NSPasteboard generalPasteboard];
+    [paste clearContents];
+    [paste writeObjects:@[[item lookin_promptForAI]]];
 }
 
 - (void)_handleHideScreenshotForever {

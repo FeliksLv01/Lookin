@@ -186,4 +186,34 @@
     return boolValue;
 }
 
+- (NSString *)lookin_promptForAI {
+    unsigned long oid = self.layerObject.oid;
+    NSString *className = self.title ?: @"Unknown";
+    NSString *viewController = self.hostViewControllerObject.lk_simpleDemangledClassName ?: @"";
+    NSString *text = self.subtitle ?: @"";
+    
+    NSMutableString *prompt = [NSMutableString string];
+    [prompt appendString:@"Inspect this iOS view with Lookin MCP.\n\n"];
+    [prompt appendFormat:@"oid: %lu (current hierarchy snapshot only)\n", oid];
+    [prompt appendFormat:@"class: %@\n", className];
+    if (viewController.length) {
+        [prompt appendFormat:@"viewController: %@\n", viewController];
+    }
+    [prompt appendFormat:@"frame: %.0f, %.0f, %.0f, %.0f\n",
+     self.frame.origin.x,
+     self.frame.origin.y,
+     self.frame.size.width,
+     self.frame.size.height];
+    if (text.length) {
+        [prompt appendFormat:@"text/subtitle: %@\n", text];
+    }
+    [prompt appendFormat:@"children: %lu\n\n", (unsigned long)self.subitems.count];
+    
+    [prompt appendString:@"Please use get_view_attributes first and read summary.frame/bounds/hidden/alpha/labelText. "];
+    [prompt appendString:@"If layout is unclear, use get_subtree(maxDepth:3, compact:true) and diagnose_layout. "];
+    [prompt appendString:@"If the oid is stale after reload_hierarchy, resolve it again with search_views or find_similar_views."];
+    
+    return prompt;
+}
+
 @end

@@ -99,8 +99,11 @@ public struct LookinViewInfo: Sendable, Encodable {
     public let hasChildren: Bool
     public let childCount: Int
     public let classChain: [String]
+    public let viewClassChain: [String]
+    public let layerClassChain: [String]
     public let parentOid: UInt?
     public let childOids: [UInt]
+    public let snapshotNote: String
     
     public init(
         oid: UInt,
@@ -121,8 +124,11 @@ public struct LookinViewInfo: Sendable, Encodable {
         hasChildren: Bool,
         childCount: Int,
         classChain: [String],
+        viewClassChain: [String] = [],
+        layerClassChain: [String] = [],
         parentOid: UInt?,
-        childOids: [UInt]
+        childOids: [UInt],
+        snapshotNote: String = "oid is only valid within the current hierarchy snapshot. After reload_hierarchy, resolve it again by class/text/frame or use find_similar_views."
     ) {
         self.oid = oid
         self.className = className
@@ -142,8 +148,11 @@ public struct LookinViewInfo: Sendable, Encodable {
         self.hasChildren = hasChildren
         self.childCount = childCount
         self.classChain = classChain
+        self.viewClassChain = viewClassChain
+        self.layerClassChain = layerClassChain
         self.parentOid = parentOid
         self.childOids = childOids
+        self.snapshotNote = snapshotNote
     }
     
     public func toJSON() -> String {
@@ -176,10 +185,67 @@ public struct LookinViewNode: Sendable, Encodable {
 public struct LookinHierarchyResult: Sendable, Encodable {
     public let views: [LookinViewInfo]
     public let total: Int
+    public let returned: Int
+    public let note: String?
     
-    public init(views: [LookinViewInfo], total: Int) {
+    public init(views: [LookinViewInfo], total: Int, returned: Int? = nil, note: String? = nil) {
         self.views = views
         self.total = total
+        self.returned = returned ?? views.count
+        self.note = note
+    }
+    
+    public func toJSON() -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        guard let data = try? encoder.encode(self),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
+    }
+}
+
+// MARK: - Layout Diagnostics
+
+public struct LookinLayoutDiagnostic: Sendable, Encodable {
+    public let kind: String
+    public let severity: String
+    public let oid: UInt
+    public let className: String
+    public let text: String?
+    public let frame: LookinRectValue
+    public let parentOid: UInt?
+    public let message: String
+    
+    public init(
+        kind: String,
+        severity: String,
+        oid: UInt,
+        className: String,
+        text: String?,
+        frame: LookinRectValue,
+        parentOid: UInt?,
+        message: String
+    ) {
+        self.kind = kind
+        self.severity = severity
+        self.oid = oid
+        self.className = className
+        self.text = text
+        self.frame = frame
+        self.parentOid = parentOid
+        self.message = message
+    }
+}
+
+public struct LookinLayoutDiagnosticsResult: Sendable, Encodable {
+    public let diagnostics: [LookinLayoutDiagnostic]
+    public let count: Int
+    
+    public init(diagnostics: [LookinLayoutDiagnostic]) {
+        self.diagnostics = diagnostics
+        self.count = diagnostics.count
     }
     
     public func toJSON() -> String {
@@ -639,6 +705,7 @@ public struct LookinViewAttributesResult: Sendable, Encodable {
     public let oid: UInt
     public let className: String
     public let memoryAddress: String?
+    public let summary: LookinViewAttributeSummary
     public let attributeGroups: [LookinAttributeGroupInfo]      // 标准属性组
     public let customAttributeGroups: [LookinAttributeGroupInfo] // 自定义属性组
     public let eventHandlers: [LookinEventHandlerInfo]
@@ -647,6 +714,7 @@ public struct LookinViewAttributesResult: Sendable, Encodable {
         oid: UInt,
         className: String,
         memoryAddress: String?,
+        summary: LookinViewAttributeSummary,
         attributeGroups: [LookinAttributeGroupInfo],
         customAttributeGroups: [LookinAttributeGroupInfo],
         eventHandlers: [LookinEventHandlerInfo]
@@ -654,6 +722,7 @@ public struct LookinViewAttributesResult: Sendable, Encodable {
         self.oid = oid
         self.className = className
         self.memoryAddress = memoryAddress
+        self.summary = summary
         self.attributeGroups = attributeGroups
         self.customAttributeGroups = customAttributeGroups
         self.eventHandlers = eventHandlers
@@ -670,6 +739,40 @@ public struct LookinViewAttributesResult: Sendable, Encodable {
     }
 }
 
+public struct LookinViewAttributeSummary: Sendable, Encodable {
+    public let frame: LookinRectValue
+    public let bounds: LookinRectValue
+    public let hidden: Bool
+    public let alpha: Double
+    public let labelText: String?
+    public let font: String?
+    public let textColor: String?
+    public let viewClassChain: [String]
+    public let layerClassChain: [String]
+    
+    public init(
+        frame: LookinRectValue,
+        bounds: LookinRectValue,
+        hidden: Bool,
+        alpha: Double,
+        labelText: String?,
+        font: String?,
+        textColor: String?,
+        viewClassChain: [String],
+        layerClassChain: [String]
+    ) {
+        self.frame = frame
+        self.bounds = bounds
+        self.hidden = hidden
+        self.alpha = alpha
+        self.labelText = labelText
+        self.font = font
+        self.textColor = textColor
+        self.viewClassChain = viewClassChain
+        self.layerClassChain = layerClassChain
+    }
+}
+
 // MARK: - Data Source Protocol
 
 /// 数据源协议 - 主应用需要实现
@@ -683,7 +786,10 @@ public protocol LookinMCPDataSource: AnyObject, Sendable {
     func listApps() async -> [LookinAppInfo]
     
     /// 获取视图层级
-    func getHierarchy(flat: Bool, maxDepth: Int?) async -> LookinHierarchyResult
+    func getHierarchy(flat: Bool, maxDepth: Int?, rootOid: UInt?, classFilter: String?, textFilter: String?, limit: Int?) async -> LookinHierarchyResult
+    
+    /// 获取指定视图的子树
+    func getSubtree(oid: UInt, maxDepth: Int?) async -> LookinHierarchyResult?
     
     /// 获取指定视图的详细信息
     func getView(oid: UInt) async -> LookinViewInfo?
@@ -693,6 +799,12 @@ public protocol LookinMCPDataSource: AnyObject, Sendable {
     
     /// 搜索视图
     func searchViews(query: String, type: LookinSearchType) async -> [LookinViewInfo]
+    
+    /// 根据旧 oid 和上一份快照寻找当前快照中的近似节点
+    func findSimilarViews(oid: UInt, limit: Int) async -> [LookinViewInfo]
+    
+    /// 聚合常见布局异常
+    func diagnoseLayout() async -> LookinLayoutDiagnosticsResult
     
     /// 列出所有 ViewController
     func listViewControllers() async -> [LookinViewControllerInfo]

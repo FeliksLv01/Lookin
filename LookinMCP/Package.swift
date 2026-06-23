@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "LookinMCP", targets: ["LookinMCP"])
     ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0")
     ],
     targets: [

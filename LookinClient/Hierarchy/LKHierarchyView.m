@@ -543,39 +543,10 @@ extern NSString *const LKAppShowConsoleNotificationName;
     if (!item) {
         return;
     }
-    
-    // Build a prompt that instructs AI to analyze this view via MCP
-    unsigned long oid = item.layerObject.oid;
-    NSString *className = item.title ?: @"Unknown";
-    NSString *viewController = item.hostViewControllerObject.classChainList.firstObject ?: @"";
-    
-    NSMutableString *prompt = [NSMutableString string];
-    
-    // Context about the view
-    [prompt appendFormat:@"I'm inspecting an iOS view in Lookin. Please analyze this view using the Lookin MCP tools.\n\n"];
-    [prompt appendFormat:@"**View Info:**\n"];
-    [prompt appendFormat:@"- Class: `%@`\n", className];
-    [prompt appendFormat:@"- OID: `%lu`\n", oid];
-    if (viewController.length > 0) {
-        [prompt appendFormat:@"- ViewController: `%@`\n", viewController];
-    }
-    [prompt appendFormat:@"- Frame: (%.0f, %.0f, %.0f, %.0f)\n", 
-        item.frame.origin.x, item.frame.origin.y, 
-        item.frame.size.width, item.frame.size.height];
-    if (item.subtitle.length > 0) {
-        [prompt appendFormat:@"- Text: \"%@\"\n", item.subtitle];
-    }
-    [prompt appendFormat:@"- Children: %lu\n", (unsigned long)item.subitems.count];
-    
-    [prompt appendString:@"\n**Please:**\n"];
-    [prompt appendFormat:@"1. Use `get_view` tool with oid `%lu` to get detailed attributes\n", oid];
-    [prompt appendString:@"2. Analyze the view's layout and properties\n"];
-    [prompt appendString:@"3. If there are issues, suggest fixes\n"];
-    
-    // Copy to pasteboard
+
     NSPasteboard *paste = [NSPasteboard generalPasteboard];
     [paste clearContents];
-    [paste writeObjects:@[prompt]];
+    [paste writeObjects:@[[item lookin_promptForAI]]];
 }
 
 - (void)_handleExpandRecursively:(NSMenuItem *)menuItem {

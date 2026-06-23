@@ -24,10 +24,14 @@ typealias MCPConstraintItemInfo = LookinMCP.LookinConstraintItemInfo
 typealias MCPEventHandlerInfo = LookinMCP.LookinEventHandlerInfo
 typealias MCPEventHandlerTypeValue = LookinMCP.LookinEventHandlerTypeValue
 typealias MCPTargetActionInfo = LookinMCP.LookinTargetActionInfo
+typealias MCPViewAttributeSummary = LookinMCP.LookinViewAttributeSummary
+typealias MCPLayoutDiagnostic = LookinMCP.LookinLayoutDiagnostic
+typealias MCPLayoutDiagnosticsResult = LookinMCP.LookinLayoutDiagnosticsResult
 
 /// Lookin MCP 数据提供者 - 桥接 Obj-C 数据源
 @MainActor
 final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
+    private var previousSnapshotViews: [LookinViewInfo] = []
     
     // MARK: - Data Sources
     
@@ -72,14 +76,51 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
         ]
     }
     
-    func getHierarchy(flat: Bool, maxDepth: Int?) async -> LookinHierarchyResult {
-        let items = dataSource.flatItems ?? []
-        
-        let views = items.map { item in
-            convertToViewInfo(item)
+    func getHierarchy(flat: Bool, maxDepth: Int?, rootOid: UInt?, classFilter: String?, textFilter: String?, limit: Int?) async -> LookinHierarchyResult {
+        let items: [LookinDisplayItem]
+        if let rootOid = rootOid {
+            guard let rootItem = dataSource.displayItem(withOid: rootOid) else {
+                return LookinHierarchyResult(
+                    views: [],
+                    total: 0,
+                    note: "Root oid \(rootOid) was not found. Oids are valid only within the current hierarchy snapshot."
+                )
+            }
+            items = subtreeItems(from: rootItem, maxDepth: maxDepth)
+        } else {
+            items = dataSource.flatItems ?? []
         }
         
-        return LookinHierarchyResult(views: views, total: views.count)
+        var views = items
+            .filter { item in
+                matchesFilters(item, classFilter: classFilter, textFilter: textFilter)
+            }
+            .map { item in
+                convertToViewInfo(item)
+            }
+        
+        let total = views.count
+        if let limit = limit, limit > 0, views.count > limit {
+            views = Array(views.prefix(limit))
+        }
+        
+        return LookinHierarchyResult(
+            views: views,
+            total: total,
+            note: "oid is snapshot-scoped. After reload_hierarchy, resolve views again by class/text/frame or use find_similar_views."
+        )
+    }
+    
+    func getSubtree(oid: UInt, maxDepth: Int?) async -> LookinHierarchyResult? {
+        guard let item = dataSource.displayItem(withOid: oid) else {
+            return nil
+        }
+        let views = subtreeItems(from: item, maxDepth: maxDepth).map { convertToViewInfo($0) }
+        return LookinHierarchyResult(
+            views: views,
+            total: views.count,
+            note: "Subtree is returned as a depth-ordered flat list rooted at oid \(oid)."
+        )
     }
     
     func getView(oid: UInt) async -> LookinViewInfo? {
@@ -122,14 +163,12 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
             
             switch type {
             case .className:
-                let title = item.title()
-                match = title.localizedCaseInsensitiveContains(query)
+                match = searchHaystack(for: item, includeTextAttributes: false).classText.localizedCaseInsensitiveContains(query)
             case .text:
-                let subtitle = item.subtitle()
-                match = subtitle.localizedCaseInsensitiveContains(query)
+                match = searchHaystack(for: item, includeTextAttributes: true).text.localizedCaseInsensitiveContains(query)
             case .oid:
                 if let oidValue = UInt(query) {
-                    match = item.layerObject?.oid == oidValue
+                    match = item.layerObject?.oid == oidValue || item.viewObject?.oid == oidValue
                 }
             }
             
@@ -139,6 +178,93 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
         }
         
         return results
+    }
+    
+    func findSimilarViews(oid: UInt, limit: Int) async -> [LookinViewInfo] {
+        let currentItems = dataSource.flatItems ?? []
+        if let current = dataSource.displayItem(withOid: oid) {
+            return [convertToViewInfo(current)]
+        }
+        
+        guard let oldView = previousSnapshotViews.first(where: { $0.oid == oid }) else {
+            return []
+        }
+        
+        let scored = currentItems.map { item -> (score: Double, item: LookinDisplayItem) in
+            let view = convertToViewInfo(item)
+            var score = 0.0
+            if view.className == oldView.className {
+                score += 60
+            } else if view.className.localizedCaseInsensitiveContains(oldView.className) || oldView.className.localizedCaseInsensitiveContains(view.className) {
+                score += 25
+            }
+            if view.text == oldView.text && view.text?.isEmpty == false {
+                score += 20
+            }
+            score -= abs(view.frameX - oldView.frameX) * 0.5
+            score -= abs(view.frameY - oldView.frameY) * 0.5
+            score -= abs(view.frameWidth - oldView.frameWidth) * 0.2
+            score -= abs(view.frameHeight - oldView.frameHeight) * 0.2
+            score -= Double(abs(view.depth - oldView.depth)) * 3
+            return (score, item)
+        }
+        
+        return scored
+            .filter { $0.score > 0 }
+            .sorted { $0.score > $1.score }
+            .prefix(max(limit, 1))
+            .map { convertToViewInfo($0.item) }
+    }
+    
+    func diagnoseLayout() async -> MCPLayoutDiagnosticsResult {
+        let items = dataSource.flatItems ?? []
+        var diagnostics: [MCPLayoutDiagnostic] = []
+        
+        for item in items {
+            let view = convertToViewInfo(item)
+            let frame = MCPRectValue(x: view.frameX, y: view.frameY, width: view.frameWidth, height: view.frameHeight)
+            let visible = !view.isHidden && view.alpha > 0.01
+            let text = resolvedText(for: item)
+            
+            if visible, text?.isEmpty == false, (view.frameWidth <= 0 || view.frameHeight <= 0) {
+                diagnostics.append(MCPLayoutDiagnostic(
+                    kind: "nonempty_text_zero_size",
+                    severity: "error",
+                    oid: view.oid,
+                    className: view.className,
+                    text: text,
+                    frame: frame,
+                    parentOid: view.parentOid,
+                    message: "Visible view has nonempty text but zero width or height."
+                ))
+            } else if visible, view.frameWidth <= 0 || view.frameHeight <= 0 {
+                diagnostics.append(MCPLayoutDiagnostic(
+                    kind: "visible_zero_size",
+                    severity: "warning",
+                    oid: view.oid,
+                    className: view.className,
+                    text: text,
+                    frame: frame,
+                    parentOid: view.parentOid,
+                    message: "Visible view has zero width or height."
+                ))
+            }
+            
+            if let parent = item.`super`, visible, isChild(item, outsideParent: parent) {
+                diagnostics.append(MCPLayoutDiagnostic(
+                    kind: "child_outside_parent_bounds",
+                    severity: "warning",
+                    oid: view.oid,
+                    className: view.className,
+                    text: text,
+                    frame: frame,
+                    parentOid: view.parentOid,
+                    message: "Child frame is outside its parent's bounds."
+                ))
+            }
+        }
+        
+        return MCPLayoutDiagnosticsResult(diagnostics: diagnostics)
     }
     
     func listViewControllers() async -> [LookinViewControllerInfo] {
@@ -209,12 +335,13 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
                 
                 // 在主线程更新数据源
                 DispatchQueue.main.async {
+                    self.previousSnapshotViews = (self.dataSource.flatItems ?? []).map { self.convertToViewInfo($0) }
                     self.dataSource.reload(with: hierarchyInfo, keepState: true)
                     let count = self.dataSource.flatItems?.count ?? 0
                     
                     continuation.resume(returning: LookinReloadResult(
                         success: true,
-                        message: "Hierarchy reloaded successfully",
+                        message: "Hierarchy reloaded successfully. Previous oids may now be invalid because oid is snapshot-scoped; use search_views or find_similar_views to resolve nodes again.",
                         viewCount: count
                     ))
                 }
@@ -250,6 +377,7 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
             oid: oid,
             className: item.title(),
             memoryAddress: address,
+            summary: makeAttributeSummary(for: item, attributeGroups: attrGroups, customAttributeGroups: customGroups),
             attributeGroups: attrGroups,
             customAttributeGroups: customGroups,
             eventHandlers: handlers
@@ -261,12 +389,14 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
     private func convertToViewInfo(_ item: LookinDisplayItem) -> LookinViewInfo {
         let oid = item.layerObject?.oid ?? 0
         let className = item.title()
-        let text: String? = item.subtitle()
+        let text: String? = resolvedText(for: item)
         
         let frame = item.frame
         let bounds = item.bounds
         
-        let classChain = (item.layerObject?.classChainList as? [String]) ?? []
+        let viewClassChain = (item.viewObject?.classChainList as? [String]) ?? []
+        let layerClassChain = (item.layerObject?.classChainList as? [String]) ?? []
+        let classChain = layerClassChain.isEmpty ? viewClassChain : layerClassChain
         
         let parentOid: UInt? = item.`super`?.layerObject?.oid != nil 
             ? UInt(truncatingIfNeeded: item.`super`!.layerObject!.oid) 
@@ -297,9 +427,147 @@ final class LookinMCPDataProvider: LookinMCPDataSource, @unchecked Sendable {
             hasChildren: (item.subitems?.count ?? 0) > 0,
             childCount: item.subitems?.count ?? 0,
             classChain: classChain,
+            viewClassChain: viewClassChain,
+            layerClassChain: layerClassChain,
             parentOid: parentOid,
             childOids: childOids
         )
+    }
+    
+    private func subtreeItems(from root: LookinDisplayItem, maxDepth: Int?) -> [LookinDisplayItem] {
+        let rootDepth = root.indentLevel()
+        var result: [LookinDisplayItem] = []
+        
+        func visit(_ item: LookinDisplayItem) {
+            let relativeDepth = item.indentLevel() - rootDepth
+            if let maxDepth = maxDepth, relativeDepth > maxDepth {
+                return
+            }
+            result.append(item)
+            item.subitems?.forEach { visit($0) }
+        }
+        
+        visit(root)
+        return result
+    }
+    
+    private func matchesFilters(_ item: LookinDisplayItem, classFilter: String?, textFilter: String?) -> Bool {
+        let haystack = searchHaystack(for: item, includeTextAttributes: true)
+        if let classFilter = classFilter, !classFilter.isEmpty, !haystack.classText.localizedCaseInsensitiveContains(classFilter) {
+            return false
+        }
+        if let textFilter = textFilter, !textFilter.isEmpty, !haystack.text.localizedCaseInsensitiveContains(textFilter) {
+            return false
+        }
+        return true
+    }
+    
+    private func searchHaystack(for item: LookinDisplayItem, includeTextAttributes: Bool) -> (classText: String, text: String) {
+        let classParts = [
+            item.title(),
+            item.viewObject?.classChainList?.joined(separator: " "),
+            item.layerObject?.classChainList?.joined(separator: " ")
+        ].compactMap { $0 }
+        
+        var textParts = [item.subtitle()].compactMap { $0 }
+        if includeTextAttributes {
+            textParts.append(contentsOf: textAttributeStrings(for: item))
+        }
+        
+        return (classParts.joined(separator: " "), textParts.joined(separator: " "))
+    }
+    
+    private func resolvedText(for item: LookinDisplayItem) -> String? {
+        let attributeText = textAttributeStrings(for: item).first { !$0.isEmpty }
+        return attributeText ?? item.subtitle()
+    }
+    
+    private func textAttributeStrings(for item: LookinDisplayItem) -> [String] {
+        let groups = convertAttributeGroups(item.attributesGroupList) + convertAttributeGroups(item.customAttrGroupList)
+        return strings(in: groups, matching: [
+            "text",
+            "title",
+            "attributedtext",
+            "accessibilitylabel",
+            "label"
+        ])
+    }
+    
+    private func makeAttributeSummary(
+        for item: LookinDisplayItem,
+        attributeGroups: [MCPAttributeGroupInfo],
+        customAttributeGroups: [MCPAttributeGroupInfo]
+    ) -> MCPViewAttributeSummary {
+        let groups = attributeGroups + customAttributeGroups
+        let frame = item.frame
+        let bounds = item.bounds
+        let labelText = strings(in: groups, matching: ["text", "title", "attributedtext", "accessibilitylabel", "label"]).first
+        let font = strings(in: groups, matching: ["font"]).first
+        let textColor = strings(in: groups, matching: ["textcolor", "text color"]).first
+        
+        return MCPViewAttributeSummary(
+            frame: MCPRectValue(x: Double(frame.origin.x), y: Double(frame.origin.y), width: Double(frame.size.width), height: Double(frame.size.height)),
+            bounds: MCPRectValue(x: Double(bounds.origin.x), y: Double(bounds.origin.y), width: Double(bounds.size.width), height: Double(bounds.size.height)),
+            hidden: item.isHidden,
+            alpha: Double(item.alpha),
+            labelText: labelText,
+            font: font,
+            textColor: textColor,
+            viewClassChain: (item.viewObject?.classChainList as? [String]) ?? [],
+            layerClassChain: (item.layerObject?.classChainList as? [String]) ?? []
+        )
+    }
+    
+    private func strings(in groups: [MCPAttributeGroupInfo], matching needles: [String]) -> [String] {
+        var values: [String] = []
+        for group in groups {
+            for section in group.sections {
+                for attr in section.attributes {
+                    let key = [
+                        attr.identifier,
+                        attr.displayTitle,
+                        section.identifier,
+                        group.identifier
+                    ].compactMap { $0 }.joined(separator: " ").lowercased()
+                    
+                    guard needles.contains(where: { key.contains($0) }) else {
+                        continue
+                    }
+                    if let string = stringValue(from: attr.value), !string.isEmpty {
+                        values.append(string)
+                    }
+                }
+            }
+        }
+        return Array(NSOrderedSet(array: values)) as? [String] ?? values
+    }
+    
+    private func stringValue(from value: MCPAttributeValue) -> String? {
+        switch value {
+        case .string(let string):
+            return string
+        case .json(let string):
+            return string
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return String(value)
+        case .color(let value):
+            return value.hex
+        default:
+            return nil
+        }
+    }
+    
+    private func isChild(_ item: LookinDisplayItem, outsideParent parent: LookinDisplayItem) -> Bool {
+        let frame = item.frame
+        let bounds = parent.bounds
+        return frame.minX < bounds.minX ||
+            frame.minY < bounds.minY ||
+            frame.maxX > bounds.maxX ||
+            frame.maxY > bounds.maxY
     }
     
     private func pngData(from image: NSImage) -> Data? {

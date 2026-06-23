@@ -35,13 +35,31 @@ struct LookinMCPToolHandler {
             ),
             Tool(
                 name: "get_hierarchy",
-                description: "Get the complete view hierarchy of the connected iOS app. Returns all views with their properties, frames, and relationships.",
+                description: "Get the current hierarchy snapshot. Oids are snapshot-scoped: after reload_hierarchy, resolve a view again by class/text/frame or use find_similar_views.",
                 inputSchema: .object([
                     "type": "object",
                     "properties": [
                         "flat": ["type": "boolean", "description": "If true, returns a flat array of views. If false (default), returns tree structure."],
-                        "maxDepth": ["type": "integer", "description": "Maximum depth to traverse in the hierarchy. Omit for unlimited depth."]
+                        "maxDepth": ["type": "integer", "description": "Maximum depth to traverse in the hierarchy. Omit for unlimited depth."],
+                        "rootOid": ["type": "integer", "description": "Optional oid to use as the root of the returned subtree."],
+                        "classFilter": ["type": "string", "description": "Optional case-insensitive class-name filter."],
+                        "textFilter": ["type": "string", "description": "Optional case-insensitive text filter. Covers visible summary text and loaded text attributes."],
+                        "limit": ["type": "integer", "description": "Optional maximum number of returned views for large flat results."],
+                        "compact": ["type": "boolean", "description": "If true, returns only oid, class, text, frame, depth, parentOid, and childOids."]
                     ]
+                ])
+            ),
+            Tool(
+                name: "get_subtree",
+                description: "Get a subtree rooted at a specific current-snapshot oid. Useful for focused exploration such as container -> renderedView -> children.",
+                inputSchema: .object([
+                    "type": "object",
+                    "properties": [
+                        "oid": ["type": "integer", "description": "The current-snapshot oid of the subtree root"],
+                        "maxDepth": ["type": "integer", "description": "Maximum depth under the root. Defaults to unlimited."],
+                        "compact": ["type": "boolean", "description": "If true, returns only oid, class, text, frame, depth, parentOid, and childOids."]
+                    ],
+                    "required": ["oid"]
                 ])
             ),
             Tool(
@@ -68,7 +86,7 @@ struct LookinMCPToolHandler {
             ),
             Tool(
                 name: "search_views",
-                description: "Search for views by class name, text content, or object ID. Returns matching views with their basic information.",
+                description: "Search for views by class name, text content, or object ID. Text search covers UILabel text, attributed text strings, button titles, accessibility labels, and loaded string attributes when available.",
                 inputSchema: .object([
                     "type": "object",
                     "properties": [
@@ -90,7 +108,24 @@ struct LookinMCPToolHandler {
             ),
             Tool(
                 name: "reload_hierarchy",
-                description: "Reload the view hierarchy from the connected iOS app. Use this to refresh the data after UI changes.",
+                description: "Reload the view hierarchy from the connected iOS app. Existing oids may become invalid because oid values are only valid within one hierarchy snapshot.",
+                inputSchema: .object(["type": "object", "properties": [:]])
+            ),
+            Tool(
+                name: "find_similar_views",
+                description: "Find likely current-snapshot matches for a view oid from the previous snapshot using class, frame, parent, and approximate position.",
+                inputSchema: .object([
+                    "type": "object",
+                    "properties": [
+                        "oid": ["type": "integer", "description": "The oid to resolve. Usually an oid from before reload_hierarchy."],
+                        "limit": ["type": "integer", "description": "Maximum candidate count. Defaults to 5."]
+                    ],
+                    "required": ["oid"]
+                ])
+            ),
+            Tool(
+                name: "diagnose_layout",
+                description: "Aggregate common layout anomalies such as visible nonempty text with zero size, visible views with zero frames, and children outside parent bounds.",
                 inputSchema: .object(["type": "object", "properties": [:]])
             ),
             Tool(
@@ -125,8 +160,32 @@ struct LookinMCPToolHandler {
         case "get_hierarchy":
             let flat = params.arguments?["flat"]?.boolValue ?? false
             let maxDepth = params.arguments?["maxDepth"]?.intValue
-            let result = await dataSource.getHierarchy(flat: flat, maxDepth: maxDepth)
+            let rootOid = params.arguments?["rootOid"]?.intValue.map(UInt.init)
+            let classFilter = params.arguments?["classFilter"]?.stringValue
+            let textFilter = params.arguments?["textFilter"]?.stringValue
+            let limit = params.arguments?["limit"]?.intValue
+            let result = await dataSource.getHierarchy(flat: flat, maxDepth: maxDepth, rootOid: rootOid, classFilter: classFilter, textFilter: textFilter, limit: limit)
+            if params.arguments?["compact"]?.boolValue == true,
+               let json = compactHierarchyJSON(result) {
+                return .init(content: [.text(json)], isError: false)
+            }
             return .init(content: [.text(result.toJSON())], isError: false)
+            
+        case "get_subtree":
+            guard let oidValue = params.arguments?["oid"]?.intValue else {
+                return .init(content: [.text("Error: Missing required parameter 'oid'")], isError: true)
+            }
+            let oid = UInt(oidValue)
+            let maxDepth = params.arguments?["maxDepth"]?.intValue
+            if let result = await dataSource.getSubtree(oid: oid, maxDepth: maxDepth) {
+                if params.arguments?["compact"]?.boolValue == true,
+                   let json = compactHierarchyJSON(result) {
+                    return .init(content: [.text(json)], isError: false)
+                }
+                return .init(content: [.text(result.toJSON())], isError: false)
+            } else {
+                return .init(content: [.text("Error: View not found with oid \(oid). Oids are only valid within the current hierarchy snapshot; after reload_hierarchy, use search_views or find_similar_views.")], isError: true)
+            }
             
         case "get_view":
             guard let oidValue = params.arguments?["oid"]?.intValue else {
@@ -136,7 +195,7 @@ struct LookinMCPToolHandler {
             if let view = await dataSource.getView(oid: oid) {
                 return .init(content: [.text(view.toJSON())], isError: false)
             } else {
-                return .init(content: [.text("Error: View not found with oid \(oid)")], isError: true)
+                return .init(content: [.text("Error: View not found with oid \(oid). Oids are only valid within the current hierarchy snapshot; after reload_hierarchy, use search_views or find_similar_views.")], isError: true)
             }
             
         case "get_screenshot":
@@ -164,7 +223,7 @@ struct LookinMCPToolHandler {
                     [
                         "oid": view.oid,
                         "class": view.className,
-                        "text": view.text as Any,
+                        "text": jsonValue(view.text),
                         "depth": view.depth
                     ]
                 },
@@ -189,7 +248,7 @@ struct LookinMCPToolHandler {
                     [
                         "class": vc.className,
                         "address": vc.address,
-                        "viewOid": vc.viewOid as Any
+                        "viewOid": jsonValue(vc.viewOid)
                     ]
                 },
                 "count": vcs.count
@@ -213,6 +272,42 @@ struct LookinMCPToolHandler {
             let result = await dataSource.reloadHierarchy()
             return .init(content: [.text(result.toJSON())], isError: !result.success)
             
+        case "find_similar_views":
+            guard let oidValue = params.arguments?["oid"]?.intValue else {
+                return .init(content: [.text("Error: Missing required parameter 'oid'")], isError: true)
+            }
+            let limit = params.arguments?["limit"]?.intValue ?? 5
+            let results = await dataSource.findSimilarViews(oid: UInt(oidValue), limit: limit)
+            let resultJSON: [String: Any] = [
+                "results": results.map { view in
+                    [
+                        "oid": view.oid,
+                        "class": view.className,
+                        "text": jsonValue(view.text),
+                        "frame": [
+                            "x": view.frameX,
+                            "y": view.frameY,
+                            "width": view.frameWidth,
+                            "height": view.frameHeight
+                        ],
+                        "depth": view.depth,
+                        "parentOid": jsonValue(view.parentOid)
+                    ]
+                },
+                "count": results.count,
+                "queryOid": oidValue,
+                "note": "Candidates are heuristic matches. Confirm with get_view or get_view_attributes before acting."
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: resultJSON, options: .prettyPrinted),
+               let json = String(data: data, encoding: .utf8) {
+                return .init(content: [.text(json)], isError: false)
+            }
+            return .init(content: [.text(results.toJSON())], isError: false)
+            
+        case "diagnose_layout":
+            let result = await dataSource.diagnoseLayout()
+            return .init(content: [.text(result.toJSON())], isError: false)
+            
         case "get_view_attributes":
             guard let oidValue = params.arguments?["oid"]?.intValue else {
                 return .init(content: [.text("Error: Missing required parameter 'oid'")], isError: true)
@@ -221,11 +316,44 @@ struct LookinMCPToolHandler {
             if let attributes = await dataSource.getViewAttributes(oid: oid) {
                 return .init(content: [.text(attributes.toJSON())], isError: false)
             } else {
-                return .init(content: [.text("Error: View not found with oid \(oid)")], isError: true)
+                return .init(content: [.text("Error: View not found with oid \(oid). Oids are only valid within the current hierarchy snapshot; after reload_hierarchy, use search_views or find_similar_views.")], isError: true)
             }
             
         default:
             return .init(content: [.text("Error: Unknown tool '\(params.name)'")], isError: true)
         }
+    }
+    
+    private static func compactHierarchyJSON(_ result: LookinHierarchyResult) -> String? {
+        let resultJSON: [String: Any] = [
+            "views": result.views.map { view in
+                [
+                    "oid": view.oid,
+                    "class": view.className,
+                    "text": jsonValue(view.text),
+                    "frame": [
+                        "x": view.frameX,
+                        "y": view.frameY,
+                        "width": view.frameWidth,
+                        "height": view.frameHeight
+                    ],
+                    "depth": view.depth,
+                    "parentOid": jsonValue(view.parentOid),
+                    "childOids": view.childOids
+                ]
+            },
+            "total": result.total,
+            "returned": result.returned,
+            "note": jsonValue(result.note)
+        ]
+        
+        guard let data = try? JSONSerialization.data(withJSONObject: resultJSON, options: .prettyPrinted) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+    
+    private static func jsonValue<T>(_ value: T?) -> Any {
+        value.map { $0 as Any } ?? NSNull()
     }
 }

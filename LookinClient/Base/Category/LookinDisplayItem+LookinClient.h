@@ -48,6 +48,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)itemIsKindOfClassWithName:(NSString *)className;
 - (BOOL)itemIsKindOfClassesWithNames:(NSSet<NSString *> *)classNames;
 
+/// A concise English prompt for AI tools that can access Lookin MCP.
+- (NSString *)lookin_promptForAI;
+
 @end
 
 NS_ASSUME_NONNULL_END
